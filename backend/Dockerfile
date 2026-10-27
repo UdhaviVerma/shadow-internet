@@ -6,7 +6,7 @@ COPY app ./app
 COPY migrations ./migrations
 COPY alembic.ini ./
 RUN pip install --no-cache-dir .
-RUN useradd --create-home --uid 10001 shadow && chown -R shadow:shadow /app
-USER shadow
+RUN useradd --create-home --uid 10001 shadowapp && chown -R shadowapp:shadowapp /app
+USER shadowapp
 EXPOSE 8000
 CMD ["sh", "-c", "alembic upgrade head && uvicorn app.main:app --host 0.0.0.0 --port ${PORT:-8000}"]
