@@ -1,0 +1,85 @@
+x-backend-environment: &backend-environment
+  ENVIRONMENT: development
+  AUTH_MODE: development
+  DATABASE_URL: postgresql+psycopg://shadow:${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD}@postgres:5432/shadow
+  REDIS_URL: redis://redis:6379/0
+  QUEUE_MODE: celery
+  FRONTEND_ORIGIN: http://localhost:3000
+  CLERK_ISSUER: ${CLERK_ISSUER:-}
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: shadow
+      POSTGRES_USER: shadow
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD}
+    volumes: [postgres_data:/var/lib/postgresql/data]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U shadow -d shadow"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+  redis:
+    image: redis:7-alpine
+    command: redis-server --appendonly yes --maxmemory 128mb --maxmemory-policy noeviction
+    volumes: [redis_data:/data]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+  api:
+    build: ./backend
+    environment: *backend-environment
+    ports: ["8001:8000"]
+    depends_on:
+      postgres: {condition: service_healthy}
+      redis: {condition: service_healthy}
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/api/health')"]
+      interval: 10s
+      timeout: 3s
+      retries: 10
+  worker:
+    build: ./backend
+    command: celery -A app.worker.celery_app worker --loglevel=info --concurrency=2
+    environment: *backend-environment
+    depends_on:
+      api: {condition: service_healthy}
+  beat:
+    build: ./backend
+    command: celery -A app.worker.celery_app beat --loglevel=info --schedule=/tmp/shadow-beat
+    environment: *backend-environment
+    depends_on:
+      api: {condition: service_healthy}
+  frontend:
+    build:
+      context: ./frontend
+      args:
+        API_BASE_URL: http://api:8000
+        NEXT_PUBLIC_DEVELOPMENT_AUTH: "true"
+    ports: ["3000:3000"]
+    depends_on:
+      api: {condition: service_healthy}
+  prometheus:
+    image: prom/prometheus:v3.2.1
+    profiles: [observability]
+    volumes: ["./observability/prometheus.yml:/etc/prometheus/prometheus.yml:ro"]
+    ports: ["9090:9090"]
+  grafana:
+    image: grafana/grafana:11.6.0
+    profiles: [observability]
+    environment:
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:?Set GRAFANA_ADMIN_PASSWORD}
+      GF_USERS_ALLOW_SIGN_UP: "false"
+    volumes:
+      - ./observability/grafana:/etc/grafana/provisioning:ro
+      - grafana_data:/var/lib/grafana
+    ports: ["3001:3000"]
+    depends_on: [prometheus]
+
+volumes:
+  postgres_data:
+  redis_data:
+  grafana_data:

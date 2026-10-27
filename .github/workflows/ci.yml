@@ -1,0 +1,100 @@
+name: Verify Shadow Internet
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  backend:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: shadow
+          POSTGRES_PASSWORD: ci-only-password
+          POSTGRES_DB: shadow_test
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U shadow -d shadow_test"
+          --health-interval 5s --health-timeout 3s --health-retries 10
+      redis:
+        image: redis:7-alpine
+        ports: ["6379:6379"]
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s --health-timeout 3s --health-retries 10
+    defaults:
+      run:
+        working-directory: backend
+    env:
+      DATABASE_URL: postgresql+psycopg://shadow:ci-only-password@localhost:5432/shadow_test
+      INTEGRATION_DATABASE_URL: postgresql+psycopg://shadow:ci-only-password@localhost:5432/shadow_test
+      INTEGRATION_REDIS_URL: redis://localhost:6379/15
+      ENVIRONMENT: test
+      AUTH_MODE: demo
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: backend/pyproject.toml
+      - run: pip install -e ".[dev]"
+      - run: ruff check app tests migrations
+      - run: ruff format --check app tests migrations
+      - run: alembic upgrade head
+      - run: pytest
+      - run: alembic downgrade base && alembic upgrade head
+  frontend:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - run: npm ci
+      - run: npm test
+      - run: npm run build
+      - run: npm run lint
+      - run: npm audit --omit=dev --audit-level=high
+  e2e:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - run: pip install -e "../backend[dev]"
+      - run: npm ci
+      - run: npx playwright install --with-deps chromium
+      - run: npm run build
+      - name: Run real frontend and API
+        run: |
+          cd ../backend
+          uvicorn app.main:app --host 127.0.0.1 --port 8001 > /tmp/shadow-api.log 2>&1 &
+          cd ../frontend
+          npm start -- --hostname 127.0.0.1 > /tmp/shadow-ui.log 2>&1 &
+          python -c "import time,urllib.request; time.sleep(8); urllib.request.urlopen('http://127.0.0.1:8001/api/health'); urllib.request.urlopen('http://127.0.0.1:3000')"
+          npm run test:e2e
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: playwright-traces
+          path: frontend/test-results

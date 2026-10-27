@@ -1,0 +1,19 @@
+services:
+  - type: web
+    name: shadow-internet-api
+    runtime: docker
+    plan: free
+    dockerfilePath: ./Dockerfile
+    healthCheckPath: /api/health
+    autoDeployTrigger: commit
+    envVars:
+      - key: ENVIRONMENT
+        value: production
+      - key: AUTH_MODE
+        value: demo
+      - key: QUEUE_MODE
+        value: inline
+      - key: DATABASE_URL
+        sync: false
+      - key: FRONTEND_ORIGIN
+        sync: false
